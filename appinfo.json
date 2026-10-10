@@ -1,0 +1,10 @@
+{
+    "id": "com.daredoes.projectm",
+    "version": "0.1.0",
+    "vendor": "daredoes",
+    "type": "native",
+    "main": "projectm-webos",
+    "title": "projectM",
+    "icon": "icon.png",
+    "nativeLifeCycleInterfaceVersion": 2
+}

@@ -1,0 +1,49 @@
+name: Build IPK
+
+# Cross-builds the native app for 32-bit ARM webOS with openlgtv's toolchain and
+# packages it with ares-package. The IPK is uploaded as a workflow artifact.
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  SDK: /opt/arm-webos-linux-gnueabi_sdk-buildroot
+  SDK_URL: https://github.com/openlgtv/buildroot-nc4/releases/download/2026.08-webos/arm-webos-linux-gnueabi_sdk-buildroot-x86_64.tar.gz
+  PROJECTM_TAG: v4.1.8
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: webOS toolchain
+        run: |
+          curl -sSL "$SDK_URL" | sudo tar xz -C /opt
+          sudo "$SDK/relocate-sdk.sh"
+
+      - name: projectM source
+        run: git clone --depth 1 --branch "$PROJECTM_TAG" --recurse-submodules --shallow-submodules https://github.com/projectM-visualizer/projectm.git third_party/projectm
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$SDK/share/buildroot/toolchainfile.cmake"
+          cmake --build build -j"$(nproc)"
+          "$SDK/bin/arm-webos-linux-gnueabi-strip" build/projectm-webos
+          "$SDK/bin/arm-webos-linux-gnueabi-readelf" -d build/projectm-webos | grep NEEDED
+
+      - name: Presets
+        run: git clone --depth 1 https://github.com/projectM-visualizer/presets-cream-of-the-crop.git presets-src
+
+      - name: Package
+        run: |
+          mkdir -p pkg/presets dist
+          cp appinfo.json assets/icon.png build/projectm-webos pkg/
+          cp -r presets-src/* pkg/presets/
+          npm install -g @webosose/ares-cli
+          ares-package pkg -o dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipk
+          path: dist/*.ipk
