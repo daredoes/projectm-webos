@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # projectM is cloned into third_party/projectm by the build (see .github/workflows/build.yml).
 set(ENABLE_GLES ON CACHE BOOL "" FORCE)
+# projectM sets USE_GLES after its vendored SOIL2 is configured; set it first so SOIL2 uses GLES3 headers.
+set(USE_GLES ON)
 set(ENABLE_PLAYLIST ON CACHE BOOL "" FORCE)
 set(ENABLE_SYSTEM_PROJECTM_EVAL OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
