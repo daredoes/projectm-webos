@@ -22,6 +22,12 @@ jobs:
           curl -sSL "$SDK_URL" | sudo tar xz -C /opt
           sudo "$SDK/relocate-sdk.sh"
 
+      - name: stb_easy_font
+        run: |
+          mkdir -p third_party/stb
+          curl -sSfL -o third_party/stb/stb_easy_font.h \
+            https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_easy_font.h
+
       - name: projectM source
         run: git clone --depth 1 --branch "$PROJECTM_TAG" --recurse-submodules --shallow-submodules https://github.com/projectM-visualizer/projectm.git third_party/projectm
 

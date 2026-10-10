@@ -21,6 +21,8 @@ pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
 pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse-simple libpulse)
 
 add_executable(projectm-webos src/main.cpp)
+# stb_easy_font.h is downloaded into third_party/stb by the build.
+target_include_directories(projectm-webos PRIVATE third_party/stb)
 target_link_libraries(projectm-webos PRIVATE
     libprojectM::projectM
     libprojectM::playlist
