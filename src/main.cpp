@@ -132,11 +132,10 @@ void onPresetSwitched(bool, unsigned int index, void*) {
     g_switchedTo = static_cast<int>(index);
 }
 
-// The auto-change toggle survives restarts in a one-character file.
-std::string settingsPath() {
-    const char* home = getenv("HOME");
-    return std::string(home && *home ? home : "/tmp") + "/.projectm-webos-autochange";
-}
+// The auto-change toggle survives restarts and app updates in a one-character file on
+// the TV's persistent, world-writable /media/internal (HOME is the app folder, which an
+// update replaces).
+std::string settingsPath() { return "/media/internal/projectm-webos-autochange"; }
 
 bool loadAutoChange() {
     FILE* f = fopen(settingsPath().c_str(), "r");

@@ -6,7 +6,7 @@ TV's pulseaudio mixer monitor (`pcm_output.monitor`), so it reacts to any app, i
 [Sendspin Cinema](https://github.com/daredoes/sendspin-webos).
 
 - Left / Right switch presets. Up / Down toggle automatic preset changes (every 25 s);
-  off until turned on, then remembered in `$HOME/.projectm-webos-autochange`. Back exits.
+  off until turned on, then remembered in `/media/internal/projectm-webos-autochange`. Back exits.
 - The preset name shows in the top-left corner for 4 s after each change.
 - A preset that renders below 30 fps after its 3 s blend-in is skipped.
 - Launch parameters `{"screensaver": true}` make it a screensaver: any other key or a
