@@ -27,7 +27,14 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$SDK/share/buildroot/toolchainfile.cmake"
+          SYSROOT="$SDK/arm-webos-linux-gnueabi/sysroot"
+          # CMake's FindOpenGL insists on OPENGL_INCLUDE_DIR even when only GLES3 is requested.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$SDK/share/buildroot/toolchainfile.cmake" \
+            -DOPENGL_INCLUDE_DIR="$SYSROOT/usr/include" \
+            -DOPENGL_GLES3_INCLUDE_DIR="$SYSROOT/usr/include" \
+            -DOPENGL_gles3_LIBRARY="$SYSROOT/usr/lib/libGLESv2.so" \
+            -DOPENGL_egl_LIBRARY="$SYSROOT/usr/lib/libEGL.so" \
+            -DOPENGL_EGL_INCLUDE_DIR="$SYSROOT/usr/include"
           cmake --build build -j"$(nproc)"
           "$SDK/bin/arm-webos-linux-gnueabi-strip" build/projectm-webos
           "$SDK/bin/arm-webos-linux-gnueabi-readelf" -d build/projectm-webos | grep NEEDED
