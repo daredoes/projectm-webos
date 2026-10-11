@@ -4,18 +4,22 @@
 #   TV_PASSWORD=... scripts/benchmark-tv.sh HOST IPK OUT.tsv [fresh]
 #
 # "fresh" deletes earlier results on the TV first; otherwise the benchmark resumes. The app
-# is relaunched whenever it stops before every preset has a result (standby, the TV's own
-# screensaver, someone pressing Back). The Sendspin service keeps the screensaver away while
+# is relaunched whenever results stop coming in before every preset has one (standby, the
+# TV's own screensaver, someone pressing Back). The Sendspin service keeps the screensaver away while
 # it runs, and its earlier keepAwake setting is put back at the end.
 set -eu
 
 HOST="$1" IPK="$2" OUT="$3" FRESH="${4:-}"
 APP=com.daredoes.projectm
-RESULTS=/media/internal/projectm-webos-bench.tsv
+# The app writes to /media/internal, or to /media/developer where its jail mounts
+# /media/internal read-only.
+RESULTS="/media/internal/projectm-webos-bench.tsv /media/developer/projectm-webos-bench.tsv"
 PRESETS=/media/developer/apps/usr/palm/applications/$APP/presets
 OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
 export SSHPASS="$TV_PASSWORD"
 tv() { sshpass -e ssh $OPTS "root@$HOST" "$@"; }
+# luna-send prints nothing without a PTY on newer firmware.
+luna() { sshpass -e ssh -tt $OPTS "root@$HOST" "luna-send -n 1 $1 '$2'" | tr -d '\r'; }
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 # luna-send -i only streams the install status over a PTY, and busybox timeout takes -t on
@@ -35,29 +39,36 @@ retry() {
 log "installing $IPK on $HOST"
 retry sshpass -e scp $OPTS "$IPK" "root@$HOST:/media/developer/bench.ipk"
 retry install
-tv "rm -f /media/developer/bench.ipk; ${FRESH:+rm -f $RESULTS}"
+tv "rm -f /media/developer/bench.ipk ${FRESH:+$RESULTS}"
 
-KEEP_AWAKE=$(tv "luna-send -n 1 luna://com.sendspin.webos.service/status '{}'" | grep -o '"keepAwake": *[a-z]*' | grep -o '[a-z]*$' || echo false)
-tv "luna-send -n 1 luna://com.sendspin.webos.service/setKeepAwake '{\"keepAwake\":true}'" >/dev/null
-trap 'tv "luna-send -n 1 luna://com.sendspin.webos.service/setKeepAwake \"{\\\"keepAwake\\\":$KEEP_AWAKE}\"" >/dev/null || true' EXIT
+KEEP_AWAKE=$(luna luna://com.sendspin.webos.service/status '{}' | grep -o '"keepAwake": *[a-z]*' | grep -o '[a-z]*$' | head -1)
+KEEP_AWAKE=${KEEP_AWAKE:-false}
+luna luna://com.sendspin.webos.service/setKeepAwake '{"keepAwake":true}' >/dev/null
+trap 'luna luna://com.sendspin.webos.service/setKeepAwake "{\"keepAwake\":$KEEP_AWAKE}" >/dev/null || true' EXIT
 
 TOTAL=$(retry tv "find $PRESETS -name '*.milk' -o -name '*.prjm' | wc -l")
 log "$TOTAL presets"
+# A jailed app doesn't show in the TV's ps, so a run counts as stopped when a minute
+# passes without a new result.
+launch() { luna luna://com.webos.applicationManager/launch "{\"id\":\"$APP\",\"params\":{\"benchmark\":true}}" >/dev/null || true; }
+launch
+LAST=-1
 while :; do
+  sleep 60
   DONE=$(tv "cat $RESULTS 2>/dev/null | wc -l" || echo "")
   if [ -z "$DONE" ]; then
     log "TV unreachable, waiting"
   elif [ "$DONE" -ge "$TOTAL" ]; then
     break
-  elif ! tv "ps | grep -q [p]rojectm-webos"; then
+  elif [ "$DONE" -le "$LAST" ]; then
     log "$DONE/$TOTAL done, launching benchmark"
-    tv "luna-send -n 1 luna://com.webos.applicationManager/launch '{\"id\":\"$APP\",\"params\":{\"benchmark\":true}}'" >/dev/null || true
+    launch
   else
     log "$DONE/$TOTAL done"
   fi
-  sleep 60
+  LAST=${DONE:-$LAST}
 done
 
-retry sshpass -e scp $OPTS "root@$HOST:$RESULTS" "$OUT"
+retry sh -c "sshpass -e ssh $OPTS root@$HOST 'cat $RESULTS 2>/dev/null' > '$OUT'"
 tv "grep GL: /tmp/projectm-webos.log" || true
 log "results in $OUT"

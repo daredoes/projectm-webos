@@ -182,14 +182,20 @@ void onPresetSwitched(bool, unsigned int index, void*) {
 
 // Settings survive restarts and app updates in files on the TV's persistent,
 // world-writable /media/internal (HOME is the app folder, which an update replaces).
-const char* const kAutoChangePath = "/media/internal/projectm-webos-autochange";
-const char* const kFavoritesOnlyPath = "/media/internal/projectm-webos-favorites-only";
-const char* const kFavoritesPath = "/media/internal/projectm-webos-favorites";
-const char* const kBenchPath = "/media/internal/projectm-webos-bench.tsv";
+// Newer webOS runs the app in a jail that mounts /media/internal read-only; there they go
+// in /media/developer instead.
+std::string dataPath(const char* name) {
+    static const std::string dir = access("/media/internal", W_OK) == 0 ? "/media/internal" : "/media/developer";
+    return dir + "/" + name;
+}
+const std::string kAutoChangePath = dataPath("projectm-webos-autochange");
+const std::string kFavoritesOnlyPath = dataPath("projectm-webos-favorites-only");
+const std::string kFavoritesPath = dataPath("projectm-webos-favorites");
+const std::string kBenchPath = dataPath("projectm-webos-bench.tsv");
 
 // A toggle is a one-character file: '1' for on.
-bool loadFlag(const char* path) {
-    FILE* f = fopen(path, "r");
+bool loadFlag(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "r");
     if (!f) {
         return false;
     }
@@ -198,8 +204,8 @@ bool loadFlag(const char* path) {
     return c == '1';
 }
 
-void saveFlag(const char* path, bool on) {
-    FILE* f = fopen(path, "w");
+void saveFlag(const std::string& path, bool on) {
+    FILE* f = fopen(path.c_str(), "w");
     if (f) {
         fputc(on ? '1' : '0', f);
         fclose(f);
@@ -404,8 +410,8 @@ int main(int argc, char** argv) {
     bool favoritesOnly = loadFlag(kFavoritesOnlyPath);
     std::set<std::string> favorites = loadFavorites();
     projectm_set_preset_locked(pm, !autoChange);
-    fprintf(stderr, "auto preset change: %s, favorites only: %s, favorites: %zu\n", autoChange ? "on" : "off",
-            favoritesOnly ? "on" : "off", favorites.size());
+    fprintf(stderr, "auto preset change: %s, favorites only: %s, favorites: %zu, settings in %s\n",
+            autoChange ? "on" : "off", favoritesOnly ? "on" : "off", favorites.size(), kFavoritesPath.c_str());
 
     const std::string presets = dir + "/presets";
     // The benchmark loads presets itself, so its playlist only lists them.
@@ -435,7 +441,11 @@ int main(int argc, char** argv) {
             }
             projectm_playlist_free_string(path);
         }
-        benchOut = fopen(kBenchPath, "a");
+        benchOut = fopen(kBenchPath.c_str(), "a");
+        if (!benchOut) {
+            fprintf(stderr, "benchmark: cannot write %s\n", kBenchPath.c_str());
+            return 1;
+        }
         projectm_set_preset_switch_failed_event_callback(
             pm,
             [](const char* path, const char* message, void*) {
@@ -443,7 +453,8 @@ int main(int argc, char** argv) {
                 g_loadFailed = true;
             },
             nullptr);
-        fprintf(stderr, "benchmark: %zu of %zu presets left, results in %s\n", benchQueue.size(), benchTotal, kBenchPath);
+        fprintf(stderr, "benchmark: %zu of %zu presets left, results in %s\n", benchQueue.size(), benchTotal,
+                kBenchPath.c_str());
     } else {
         projectm_playlist_set_shuffle(playlist, true);
         projectm_playlist_set_preset_switched_event_callback(playlist, onPresetSwitched, nullptr);

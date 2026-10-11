@@ -12,6 +12,8 @@ TV's pulseaudio mixer monitor (`pcm_output.monitor`), so it reacts to any app, i
   both auto-change and Left / Right to the favorites (all presets while there are none). Both
   are off until turned on, then remembered in `/media/internal/projectm-webos-autochange` and
   `/media/internal/projectm-webos-favorites-only`.
+- Settings, favorites and benchmark results live in `/media/internal`, or in `/media/developer`
+  on firmware that runs the app in a jail with `/media/internal` read-only (seen on webOS 8).
 - The preset name shows in the top-left corner for 4 s after each change, with `* ` in front
   of a favorite.
 - A preset that renders below 30 fps after its 3 s blend-in is skipped, unless it's a favorite.
