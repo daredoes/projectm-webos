@@ -5,21 +5,31 @@ name: Build IPK
 on:
   push:
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 env:
   SDK: /opt/arm-webos-linux-gnueabi_sdk-buildroot
   SDK_URL: https://github.com/openlgtv/buildroot-nc4/releases/download/2026.08-webos/arm-webos-linux-gnueabi_sdk-buildroot-x86_64.tar.gz
+  SDK_SHA256: 2230a6351e5cce6fcb9d4fdcb4697335f223995401ef969c81744aaeb14c5344
   PROJECTM_TAG: v4.1.8
+  PROJECTM_SHA: 4967dc003e5206d7df3ff447287f7609c47d2343
+  # Favorites and the benchmark results refer to preset paths, so the preset set is pinned.
+  PRESETS_SHA: 0180df21f5e0bd39b9060cc5de420ed2f1f9e509
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: webOS toolchain
         run: |
-          curl -sSL "$SDK_URL" | sudo tar xz -C /opt
+          curl -sSfL -o /tmp/sdk.tar.gz "$SDK_URL"
+          echo "$SDK_SHA256  /tmp/sdk.tar.gz" | sha256sum -c -
+          sudo tar xzf /tmp/sdk.tar.gz -C /opt
           sudo "$SDK/relocate-sdk.sh"
 
       - name: stb_easy_font
@@ -29,7 +39,9 @@ jobs:
             https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_easy_font.h
 
       - name: projectM source
-        run: git clone --depth 1 --branch "$PROJECTM_TAG" --recurse-submodules --shallow-submodules https://github.com/projectM-visualizer/projectm.git third_party/projectm
+        run: |
+          git clone --depth 1 --branch "$PROJECTM_TAG" --recurse-submodules --shallow-submodules https://github.com/projectM-visualizer/projectm.git third_party/projectm
+          test "$(git -C third_party/projectm rev-parse HEAD)" = "$PROJECTM_SHA"
 
       - name: Build
         run: |
@@ -46,17 +58,20 @@ jobs:
           "$SDK/bin/arm-webos-linux-gnueabi-readelf" -d build/projectm-webos | grep NEEDED
 
       - name: Presets
-        run: git clone --depth 1 https://github.com/projectM-visualizer/presets-cream-of-the-crop.git presets-src
+        run: |
+          mkdir presets-src
+          curl -sSfL "https://github.com/projectM-visualizer/presets-cream-of-the-crop/archive/$PRESETS_SHA.tar.gz" \
+            | tar xz --strip-components=1 -C presets-src
 
       - name: Package
         run: |
           mkdir -p pkg/presets dist
           cp appinfo.json assets/icon.png build/projectm-webos pkg/
           cp -r presets-src/* pkg/presets/
-          npm install -g @webosose/ares-cli
+          npm install -g @webosose/ares-cli@2.4.0
           ares-package pkg -o dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ipk
           path: dist/*.ipk

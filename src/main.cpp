@@ -5,10 +5,13 @@
 // a fraction of the panel resolution and the result is stretched to full screen, which
 // keeps the frame rate up on TV-class GPUs.
 //
-// Remote: Left/Right change preset, Up/Down toggle automatic preset changes (off until
-// turned on, then remembered), Back exits. The preset name shows in a corner for a
-// few seconds after each change. Launched with {"screensaver":true}, any other key or a pointer
-// click exits, so it behaves like a screensaver.
+// Remote: Left/Right change preset, OK adds or removes the current preset from favorites,
+// Up toggles automatic preset changes, Down toggles favorites-only (both off until turned
+// on, then remembered), Back exits. The preset name shows in a corner for a few seconds
+// after each change. Launched with {"screensaver":true}, any key but the arrows or a
+// pointer click exits, so it behaves like a screensaver. Launched with {"benchmark":true},
+// it feeds every preset a generated drum loop and writes each preset's frame rate to
+// /media/internal/projectm-webos-bench.tsv, resuming where a previous run stopped.
 #include <SDL.h>
 #include <GLES3/gl3.h>
 #include <pulse/error.h>
@@ -21,9 +24,13 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,6 +43,8 @@ constexpr size_t kChunkFrames = 512;
 constexpr float kSlowFps = 30.0f;
 constexpr Uint32 kBlendMs = 3000;
 constexpr Uint32 kMeasureMs = 3000;
+constexpr Uint32 kBenchSettleMs = 1000;
+constexpr Uint32 kBenchMeasureMs = 2000;
 
 std::mutex g_pcmLock;
 std::vector<float> g_pcm;  // interleaved stereo float samples awaiting projectM
@@ -66,6 +75,44 @@ void captureAudio(std::string source) {
         }
     }
     pa_simple_free(in);
+}
+
+// Stands in for the TV's audio in benchmark mode so every preset sees the same input: a
+// 120 bpm loop of kick on each beat, snare on 2 and 4, hats on the eighths and a bass line
+// that changes note each bar.
+void synthAudio() {
+    constexpr float kTwoPi = 6.2831853f;
+    const float bass[] = {55.0f, 73.4f, 82.4f, 65.4f};
+    uint32_t seed = 1;
+    uint64_t n = 0;
+    std::vector<float> chunk(kChunkFrames * 2);
+    auto next = std::chrono::steady_clock::now();
+    while (g_running) {
+        for (size_t i = 0; i < kChunkFrames; ++i, ++n) {
+            const float t = static_cast<float>(n % (kSampleRate * 8)) / kSampleRate;  // 4 bars of 2 s
+            const float beat = std::fmod(t, 0.5f);
+            const float eighth = std::fmod(t, 0.25f);
+            const int beatIndex = static_cast<int>(t / 0.5f) % 4;
+            seed = seed * 1664525u + 1013904223u;
+            const float noise = static_cast<float>(seed >> 8) / 8388608.0f - 1.0f;
+            float v = 0.8f * std::sin(kTwoPi * 60.0f * beat) * std::exp(-beat * 10.0f);
+            if (beatIndex % 2 == 1) {
+                v += 0.5f * noise * std::exp(-beat * 20.0f);
+            }
+            v += 0.15f * noise * std::exp(-eighth * 80.0f);
+            v += 0.3f * std::sin(kTwoPi * bass[static_cast<int>(t / 2.0f)] * t);
+            chunk[i * 2] = chunk[i * 2 + 1] = std::fmax(-1.0f, std::fmin(1.0f, v));
+        }
+        {
+            std::lock_guard<std::mutex> guard(g_pcmLock);
+            g_pcm.insert(g_pcm.end(), chunk.begin(), chunk.end());
+            if (g_pcm.size() > kSampleRate * 2) {
+                g_pcm.erase(g_pcm.begin(), g_pcm.end() - kSampleRate * 2);
+            }
+        }
+        next += std::chrono::microseconds(kChunkFrames * 1000000 / kSampleRate);
+        std::this_thread::sleep_until(next);
+    }
 }
 
 std::string appDir() {
@@ -126,19 +173,23 @@ bool isArrowKey(SDL_Keycode sym) {
 
 Uint32 g_presetStart = 0;          // SDL ticks when the current preset was switched to
 std::atomic<int> g_switchedTo{-1};  // playlist index of a switch not yet shown on screen
+bool g_loadFailed = false;          // the benchmark's last preset load failed
 
 void onPresetSwitched(bool, unsigned int index, void*) {
     g_presetStart = SDL_GetTicks();
     g_switchedTo = static_cast<int>(index);
 }
 
-// The auto-change toggle survives restarts and app updates in a one-character file on
-// the TV's persistent, world-writable /media/internal (HOME is the app folder, which an
-// update replaces).
-std::string settingsPath() { return "/media/internal/projectm-webos-autochange"; }
+// Settings survive restarts and app updates in files on the TV's persistent,
+// world-writable /media/internal (HOME is the app folder, which an update replaces).
+const char* const kAutoChangePath = "/media/internal/projectm-webos-autochange";
+const char* const kFavoritesOnlyPath = "/media/internal/projectm-webos-favorites-only";
+const char* const kFavoritesPath = "/media/internal/projectm-webos-favorites";
+const char* const kBenchPath = "/media/internal/projectm-webos-bench.tsv";
 
-bool loadAutoChange() {
-    FILE* f = fopen(settingsPath().c_str(), "r");
+// A toggle is a one-character file: '1' for on.
+bool loadFlag(const char* path) {
+    FILE* f = fopen(path, "r");
     if (!f) {
         return false;
     }
@@ -147,18 +198,58 @@ bool loadAutoChange() {
     return c == '1';
 }
 
-void saveAutoChange(bool on) {
-    FILE* f = fopen(settingsPath().c_str(), "w");
+void saveFlag(const char* path, bool on) {
+    FILE* f = fopen(path, "w");
     if (f) {
         fputc(on ? '1' : '0', f);
         fclose(f);
     }
 }
 
+// Favorites are preset paths relative to the presets folder, one per line.
+std::set<std::string> loadFavorites() {
+    std::set<std::string> favorites;
+    std::ifstream in(kFavoritesPath);
+    for (std::string line; std::getline(in, line);) {
+        if (!line.empty()) {
+            favorites.insert(line);
+        }
+    }
+    return favorites;
+}
+
+void saveFavorites(const std::set<std::string>& favorites) {
+    std::ofstream out(kFavoritesPath, std::ios::trunc);
+    for (const std::string& f : favorites) {
+        out << f << '\n';
+    }
+}
+
+// Fills the playlist with the favorites, or with every preset when favorites-only is off
+// or there are no favorites. Returns whether it holds only favorites.
+bool fillPlaylist(projectm_playlist_handle playlist, const std::string& presets,
+                  const std::set<std::string>& favorites, bool favoritesOnly) {
+    projectm_playlist_clear(playlist);
+    if (favoritesOnly && !favorites.empty()) {
+        for (const std::string& f : favorites) {
+            projectm_playlist_add_preset(playlist, (presets + "/" + f).c_str(), false);
+        }
+        fprintf(stderr, "playlist: %zu favorites\n", favorites.size());
+        return true;
+    }
+    fprintf(stderr, "playlist: %u presets from %s\n", projectm_playlist_add_path(playlist, presets.c_str(), true, false),
+            presets.c_str());
+    return false;
+}
+
+// ".../presets/Dancer/Geiss - Feedback.milk" -> "Dancer/Geiss - Feedback.milk"
+std::string relativePath(const std::string& presets, const std::string& path) {
+    return path.compare(0, presets.size() + 1, presets + "/") == 0 ? path.substr(presets.size() + 1) : path;
+}
+
 // "Dancer/Geiss - Feedback (Rovastar mix).milk" -> "Geiss - Feedback (Rovastar mix)"
-std::string presetTitle(const char* path) {
-    std::string name = path ? path : "";
-    name = name.substr(name.find_last_of('/') + 1);
+std::string presetTitle(const std::string& path) {
+    std::string name = path.substr(path.find_last_of('/') + 1);
     const size_t dot = name.find_last_of('.');
     return dot == std::string::npos ? name : name.substr(0, dot);
 }
@@ -261,7 +352,9 @@ private:
 int main(int argc, char** argv) {
     const std::string dir = appDir();
     // webOS passes the launch parameters as a JSON string in argv[1].
-    const bool screensaver = argc > 1 && std::string(argv[1]).find("\"screensaver\":true") != std::string::npos;
+    const std::string params = argc > 1 ? argv[1] : "";
+    const bool screensaver = params.find("\"screensaver\":true") != std::string::npos;
+    const bool benchmark = params.find("\"benchmark\":true") != std::string::npos;
     freopen("/tmp/projectm-webos.log", "w", stderr);
     setvbuf(stderr, nullptr, _IOLBF, 0);
 
@@ -286,14 +379,15 @@ int main(int argc, char** argv) {
         fprintf(stderr, "SDL_GL_CreateContext: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_GL_SetSwapInterval(1);
+    // The benchmark runs without vsync where the driver allows, so fps is not capped at 60.
+    SDL_GL_SetSwapInterval(benchmark ? 0 : 1);
 
     int width = 0, height = 0;
     SDL_GL_GetDrawableSize(window, &width, &height);
     const int rw = renderScale < 1.0f ? static_cast<int>(width * renderScale) : width;
     const int rh = renderScale < 1.0f ? static_cast<int>(height * renderScale) : height;
-    fprintf(stderr, "GL: %s | %s | screen %dx%d, render %dx%d\n", glGetString(GL_RENDERER), glGetString(GL_VERSION),
-            width, height, rw, rh);
+    fprintf(stderr, "GL: %s | %s | screen %dx%d, render %dx%d, swap interval %d\n", glGetString(GL_RENDERER),
+            glGetString(GL_VERSION), width, height, rw, rh, SDL_GL_GetSwapInterval());
 
     projectm_handle pm = projectm_create();
     if (!pm) {
@@ -306,17 +400,55 @@ int main(int argc, char** argv) {
     projectm_set_preset_duration(pm, 25.0);
     projectm_set_soft_cut_duration(pm, 3.0);
     projectm_set_hard_cut_enabled(pm, false);
-    bool autoChange = loadAutoChange();
+    bool autoChange = !benchmark && loadFlag(kAutoChangePath);
+    bool favoritesOnly = loadFlag(kFavoritesOnlyPath);
+    std::set<std::string> favorites = loadFavorites();
     projectm_set_preset_locked(pm, !autoChange);
-    fprintf(stderr, "auto preset change: %s (%s)\n", autoChange ? "on" : "off", settingsPath().c_str());
+    fprintf(stderr, "auto preset change: %s, favorites only: %s, favorites: %zu\n", autoChange ? "on" : "off",
+            favoritesOnly ? "on" : "off", favorites.size());
 
-    projectm_playlist_handle playlist = projectm_playlist_create(pm);
     const std::string presets = dir + "/presets";
-    fprintf(stderr, "presets: %u from %s\n", projectm_playlist_add_path(playlist, presets.c_str(), true, false),
-            presets.c_str());
-    projectm_playlist_set_shuffle(playlist, true);
-    projectm_playlist_set_preset_switched_event_callback(playlist, onPresetSwitched, nullptr);
-    projectm_playlist_play_next(playlist, true);
+    // The benchmark loads presets itself, so its playlist only lists them.
+    projectm_playlist_handle playlist = projectm_playlist_create(benchmark ? nullptr : pm);
+    bool playingFavorites = fillPlaylist(playlist, presets, favorites, favoritesOnly && !benchmark);
+    std::string current;  // path of the preset on screen
+
+    // Benchmark: every preset in path order that the results file does not have yet.
+    std::vector<std::string> benchQueue;
+    size_t benchIndex = 0, benchTotal = 0;
+    Uint32 benchLoadStart = 0, benchLoadMs = 0;
+    bool benchLoading = false;
+    FILE* benchOut = nullptr;
+    if (benchmark) {
+        std::set<std::string> done;
+        std::ifstream in(kBenchPath);
+        for (std::string line; std::getline(in, line);) {
+            done.insert(line.substr(line.find_last_of('\t') + 1));
+        }
+        projectm_playlist_sort(playlist, 0, projectm_playlist_size(playlist), SORT_PREDICATE_FULL_PATH,
+                               SORT_ORDER_ASCENDING);
+        benchTotal = projectm_playlist_size(playlist);
+        for (uint32_t i = 0; i < benchTotal; ++i) {
+            char* path = projectm_playlist_item(playlist, i);
+            if (!done.count(relativePath(presets, path))) {
+                benchQueue.push_back(path);
+            }
+            projectm_playlist_free_string(path);
+        }
+        benchOut = fopen(kBenchPath, "a");
+        projectm_set_preset_switch_failed_event_callback(
+            pm,
+            [](const char* path, const char* message, void*) {
+                fprintf(stderr, "failed: %s: %s\n", path, message);
+                g_loadFailed = true;
+            },
+            nullptr);
+        fprintf(stderr, "benchmark: %zu of %zu presets left, results in %s\n", benchQueue.size(), benchTotal, kBenchPath);
+    } else {
+        projectm_playlist_set_shuffle(playlist, true);
+        projectm_playlist_set_preset_switched_event_callback(playlist, onPresetSwitched, nullptr);
+        projectm_playlist_play_next(playlist, true);
+    }
 
     GLuint program = 0, texture = 0, vao = 0;
     if (rw != width || rh != height) {
@@ -334,13 +466,13 @@ int main(int argc, char** argv) {
     Overlay overlay;
     overlay.init();
 
-    std::thread audio(captureAudio, std::string(source));
+    std::thread audio = benchmark ? std::thread(synthAudio) : std::thread(captureAudio, std::string(source));
     std::vector<float> pending;
     Uint32 fpsStart = SDL_GetTicks();
     int frames = 0;
     Uint32 measureStart = 0;
     int measureFrames = 0;
-    fprintf(stderr, "mode: %s\n", screensaver ? "screensaver" : "app");
+    fprintf(stderr, "mode: %s\n", benchmark ? "benchmark" : screensaver ? "screensaver" : "app");
 
     while (g_running) {
         SDL_Event ev;
@@ -350,16 +482,41 @@ int main(int argc, char** argv) {
                 (screensaver && ev.type == SDL_KEYDOWN && !isArrowKey(sym)) ||
                 (screensaver && ev.type == SDL_MOUSEBUTTONDOWN)) {
                 g_running = false;
+            } else if (benchmark) {
+                continue;
             } else if (sym == SDLK_RIGHT) {
                 projectm_playlist_play_next(playlist, true);
             } else if (sym == SDLK_LEFT) {
                 projectm_playlist_play_previous(playlist, true);
-            } else if (sym == SDLK_UP || sym == SDLK_DOWN) {
+            } else if (sym == SDLK_UP) {
                 autoChange = !autoChange;
                 projectm_set_preset_locked(pm, !autoChange);
-                saveAutoChange(autoChange);
+                saveFlag(kAutoChangePath, autoChange);
                 overlay.show(autoChange ? "Auto change: on" : "Auto change: off", 3000);
                 fprintf(stderr, "auto preset change: %s\n", autoChange ? "on" : "off");
+            } else if (sym == SDLK_DOWN) {
+                favoritesOnly = !favoritesOnly;
+                saveFlag(kFavoritesOnlyPath, favoritesOnly);
+                playingFavorites = fillPlaylist(playlist, presets, favorites, favoritesOnly);
+                overlay.show(!favoritesOnly      ? "All presets"
+                             : playingFavorites ? "Favorites only"
+                                                : "Favorites only: no favorites yet",
+                             3000);
+            } else if ((sym == SDLK_RETURN || sym == SDLK_KP_ENTER) && !current.empty()) {
+                const std::string rel = relativePath(presets, current);
+                const bool added = favorites.insert(rel).second;
+                if (!added) {
+                    favorites.erase(rel);
+                }
+                saveFavorites(favorites);
+                if (favoritesOnly) {
+                    playingFavorites = fillPlaylist(playlist, presets, favorites, true);
+                }
+                overlay.show((added ? "Favorited: " : "Unfavorited: ") + presetTitle(current), 3000);
+                fprintf(stderr, "%s %s (%zu favorites)\n", added ? "favorited" : "unfavorited", rel.c_str(),
+                        favorites.size());
+            } else if (ev.type == SDL_KEYDOWN) {
+                fprintf(stderr, "key: sym %d scancode %d\n", sym, ev.key.keysym.scancode);
             }
         }
 
@@ -398,16 +555,56 @@ int main(int argc, char** argv) {
         const int switched = g_switchedTo.exchange(-1);
         if (switched >= 0) {
             char* path = projectm_playlist_item(playlist, static_cast<uint32_t>(switched));
-            overlay.show(presetTitle(path), 4000);
+            current = path ? path : "";
             projectm_playlist_free_string(path);
+            overlay.show((favorites.count(relativePath(presets, current)) ? "* " : "") + presetTitle(current), 4000);
         }
         overlay.draw(width, height);
 
         SDL_GL_SwapWindow(window);
 
-        // Skip presets this GPU cannot render smoothly, once their blend-in is over.
         const Uint32 now = SDL_GetTicks();
-        if (now - g_presetStart < kBlendMs) {
+        if (benchmark) {
+            // Each preset loads, gets a second to settle, then has its frames counted for two.
+            if (benchLoading) {
+                benchLoadMs = now - benchLoadStart;  // the load plus its first frame, where shaders compile
+                g_presetStart = now;
+                benchLoading = false;
+            } else if (benchIndex > 0 && now - g_presetStart >= kBenchSettleMs) {
+                if (measureStart == 0) {
+                    measureStart = now;
+                    measureFrames = 0;
+                } else {
+                    ++measureFrames;
+                }
+            }
+            if (benchIndex == 0 || (measureStart != 0 && now - measureStart >= kBenchMeasureMs)) {
+                if (benchIndex > 0) {  // a preset that failed to load is recorded at 0 fps
+                    fprintf(benchOut, "%.1f\t%u\t%s\n",
+                            g_loadFailed ? 0.0f : measureFrames * 1000.0f / static_cast<float>(now - measureStart),
+                            benchLoadMs,
+                            relativePath(presets, benchQueue[benchIndex - 1]).c_str());
+                    fflush(benchOut);
+                }
+                measureStart = 0;
+                if (benchIndex == benchQueue.size()) {
+                    fprintf(stderr, "benchmark: done\n");
+                    g_running = false;
+                } else {
+                    const std::string& path = benchQueue[benchIndex++];
+                    benchLoadStart = SDL_GetTicks();
+                    benchLoading = true;
+                    g_loadFailed = false;
+                    projectm_load_preset_file(pm, path.c_str(), false);
+                    overlay.show(std::to_string(benchTotal - benchQueue.size() + benchIndex) + "/" +
+                                     std::to_string(benchTotal) + " " + presetTitle(path),
+                                 60000);
+                }
+            }
+        } else if (playingFavorites || favorites.count(relativePath(presets, current))) {
+            // Favorites play whatever their frame rate.
+        } else if (now - g_presetStart < kBlendMs) {
+            // Skip presets this GPU cannot render smoothly, once their blend-in is over.
             measureStart = 0;
         } else if (measureStart == 0) {
             measureStart = now;
