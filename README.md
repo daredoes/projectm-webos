@@ -3,7 +3,7 @@
 A native webOS app that shows [projectM](https://github.com/projectM-visualizer/projectm)
 (MilkDrop-compatible) visuals for whatever the TV is playing. It reads audio from the
 TV's pulseaudio mixer monitor (`pcm_output.monitor`), so it reacts to any app, including
-[Sendspin Cinema](https://github.com/daredoes/sendspin-webos).
+[Sendspin WebOS](https://github.com/daredoes/sendspin-webos).
 
 - Left / Right switch presets. Back exits.
 - OK adds the current preset to favorites, or removes it. Favorites are listed in
@@ -48,7 +48,7 @@ The build drops the presets listed in `slow-presets.txt`: the ones under 30 fps,
 failed to load, in the benchmark on Dan Cave (webOS 6, Mali-G52) or Bedroom (webOS 7, PowerVR)
 at the default 0.5 render scale. That leaves 4,753 of 9,795.
 
-Publishing a GitHub release whose tag matches `appinfo.json`'s version (`v0.3.0`) builds the IPK
+Publishing a GitHub release whose tag matches `appinfo.json`'s version (`v0.3.1`) builds the IPK
 and attaches it with the Homebrew Channel files.
 
 ## License

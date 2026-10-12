@@ -65,6 +65,12 @@ jobs:
           # slow-presets.txt lists presets under 30 fps on any benchmarked TV, relative to presets/.
           (cd presets-src && xargs -d '\n' -a ../slow-presets.txt rm --)
 
+      # ares-cli 2.4.0 writes every file in the IPK with a 1970 date on Node 22 and later, and
+      # TVs refuse to install those through Homebrew Channel.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
       - name: Package
         run: |
           mkdir -p pkg/presets dist
@@ -72,6 +78,7 @@ jobs:
           cp -r presets-src/* pkg/presets/
           npm install -g @webosose/ares-cli@2.4.0
           ares-package pkg -o dist
+          ! ar p dist/*.ipk data.tar.gz | tar tzv | grep ' 1970-01-01 '
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
