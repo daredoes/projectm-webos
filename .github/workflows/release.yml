@@ -1,0 +1,36 @@
+name: Release
+
+# Builds the IPK for a published release (its tag must match appinfo.json's version) and
+# attaches it with a Homebrew Channel manifest and repository index.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  upload:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ipk
+          path: dist
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "${TAG#v}" = "$(jq -r .version appinfo.json)"
+          node scripts/hbc-repo.js "$TAG" dist/*.ipk
+          gh release upload "$TAG" dist/*.ipk dist/webosbrew.manifest.json dist/apps.json --clobber

@@ -29,9 +29,16 @@ TV's pulseaudio mixer monitor (`pcm_output.monitor`), so it reacts to any app, i
   `/media/internal/projectm-webos-bench.tsv` as `fps<TAB>load ms<TAB>preset` (a preset that
   fails to load gets 0 fps). A new run resumes after the last result; delete the file to start
   over. It exits when done, or on Back. The full set takes about 9 hours.
-  The **Benchmark presets** workflow runs it on each TV in turn from a self-hosted runner on
-  the home network (label `lan`) using the `TV_PASSWORD` secret, and uploads one table per TV;
-  `scripts/benchmark-tv.sh` does the same from any machine on the network.
+  `scripts/benchmark-tv.sh` installs an IPK on a rooted TV over SSH, runs the benchmark to the
+  end and copies the table back.
+
+## Install
+
+Homebrew Channel: open **Settings**, add the repository
+`https://github.com/daredoes/projectm-webos/releases/latest/download/apps.json`, then install
+**projectM** from the app list. Each release also has the IPK for `ares-install` in Developer Mode.
+
+## Build
 
 Built for 32-bit ARM webOS (`arm-webos-linux-gnueabi`) in GitHub Actions; the IPK is a
 workflow artifact. Presets come from
@@ -41,4 +48,9 @@ The build drops the presets listed in `slow-presets.txt`: the ones under 30 fps,
 failed to load, in the benchmark on Dan Cave (webOS 6, Mali-G52) or Bedroom (webOS 7, PowerVR)
 at the default 0.5 render scale. That leaves 4,753 of 9,795.
 
-projectM is LGPL-2.1 and linked statically; this app's source is here to satisfy that.
+Publishing a GitHub release whose tag matches `appinfo.json`'s version (`v0.3.0`) builds the IPK
+and attaches it with the Homebrew Channel files.
+
+## License
+
+GPL-3.0. projectM is LGPL-2.1 and linked statically; the presets keep their authors' terms (see the pack's [LICENSE.md](https://github.com/projectM-visualizer/presets-cream-of-the-crop/blob/master/LICENSE.md)).
