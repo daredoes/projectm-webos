@@ -37,5 +37,8 @@ Built for 32-bit ARM webOS (`arm-webos-linux-gnueabi`) in GitHub Actions; the IP
 workflow artifact. Presets come from
 [presets-cream-of-the-crop](https://github.com/projectM-visualizer/presets-cream-of-the-crop)
 at a pinned commit (`PRESETS_SHA` in the workflow) at build time.
+The build drops the presets listed in `slow-presets.txt`: the ones under 30 fps, or that
+failed to load, in the benchmark on Dan Cave (webOS 6, Mali-G52) or Bedroom (webOS 7, PowerVR)
+at the default 0.5 render scale. That leaves 4,753 of 9,795.
 
 projectM is LGPL-2.1 and linked statically; this app's source is here to satisfy that.
